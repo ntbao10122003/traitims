@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Dynamic Beating Heart - Ngọc Châm</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            user-select: none;
+            -webkit-user-select: none;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background-color: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000000;
+        }
+
+        /* Chữ hiển thị ở giữa trái tim */
+        .heart-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f76070;
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: 3px;
+            pointer-events: none;
+            text-align: center;
+            opacity: 0.92;
+            text-shadow: 0 0 12px rgba(247, 96, 112, 0.75), 0 0 24px rgba(247, 96, 112, 0.45);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="heartCanvas"></canvas>
+        <div id="centerText" class="heart-text">Ngọc Châm</div>
+    </div>
+
+    <script>
+        /**
+         * Chuyển thể chính xác 100% logic thuật toán từ heartpython.py
+         * Tác giả code gốc: heartpython.py
+         * Tác giả chuyển thể HTML5 Canvas: Antigravity
+         */
+
+        const IMAGE_ENLARGE = 11;
+        const HEART_COLOR = "#f76070";
+        const TOTAL_FRAMES = 20;
+        const FRAME_DURATION = 160; // 160ms tương đương với main.after(160, ...) trong Tkinter
+
+        // Hàm tọa độ gốc của trái tim theo tham số t
+        function heartFunction(t, shrinkRatio = IMAGE_ENLARGE) {
+            let x = 16 * Math.pow(Math.sin(t), 3);
+            let y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+
+            x *= shrinkRatio;
+            y *= shrinkRatio;
+
+            // Tọa độ tương đối so với tâm (0, 0)
+            return [Math.trunc(x), Math.trunc(y)];
+        }
+
+        // Tán xạ các điểm vào bên trong (scatter_inside)
+        function scatterInside(x, y, beta = 0.15) {
+            const ratioX = -beta * Math.log(Math.max(1e-7, Math.random()));
+            const ratioY = -beta * Math.log(Math.max(1e-7, Math.random()));
+
+            const dx = ratioX * x;
+            const dy = ratioY * y;
+
+            return [x - dx, y - dy];
+        }
+
+        // Thu nhỏ hào quang (shrink)
+        function shrink(x, y, ratio) {
+            const distSq = x * x + y * y;
+            const force = -1 / Math.pow(distSq, 0.6);
+            const dx = ratio * force * x;
+            const dy = ratio * force * y;
+            return [x - dx, y - dy];
+        }
+
+        // Đường cong nhịp đập theo thời gian (curve)
+        function curve(p) {
+            return (2 * (2 * Math.sin(4 * p))) / (2 * Math.PI);
+        }
+
+        // Lớp đối tượng Heart chứa toàn bộ điểm và các khung hình (frames)
+        class Heart {
+            constructor(generateFrame = TOTAL_FRAMES) {
+                this.points = [];
+                this.edgeDiffusionPoints = [];
+                this.centerDiffusionPoints = [];
+                this.allPoints = {};
+                this.generateFrame = generateFrame;
+
+                this.build(2000);
+                for (let frame = 0; frame < generateFrame; frame++) {
+                    this.calc(frame);
+                }
+            }
+
+            build(number) {
+                // 1. Tạo các điểm trên đường viền trái tim (outline)
+                const pointsMap = new Map();
+                for (let i = 0; i < number; i++) {
+                    const t = Math.random() * 2 * Math.PI;
+                    const [x, y] = heartFunction(t);
+                    const key = `${x},${y}`;
+                    if (!pointsMap.has(key)) {
+                        pointsMap.set(key, [x, y]);
+                    }
+                }
+                this.points = Array.from(pointsMap.values());
+
+                // 2. Khuếch tán viền ngoài (edge diffusion - 3 lần mỗi điểm với beta = 0.05)
+                this.edgeDiffusionPoints = [];
+                for (const [px, py] of this.points) {
+                    for (let i = 0; i < 3; i++) {
+                        const [x, y] = scatterInside(px, py, 0.05);
+                        this.edgeDiffusionPoints.push([x, y]);
+                    }
+                }
+
+                // 3. Khuếch tán tâm bên trong (center diffusion - 4000 điểm ngẫu nhiên với beta = 0.17)
+                this.centerDiffusionPoints = [];
+                for (let i = 0; i < 4000; i++) {
+                    const [px, py] = this.points[Math.floor(Math.random() * this.points.length)];
+                    const [x, y] = scatterInside(px, py, 0.17);
+                    this.centerDiffusionPoints.push([x, y]);
+                }
+            }
+
+            // Tính toán chuyển vị của từng điểm theo nhịp đập (magic parameter = 0.520)
+            calcPosition(x, y, ratio) {
+                const distSq = x * x + y * y;
+                const force = 1 / Math.pow(distSq, 0.520);
+
+                const dx = ratio * force * x + (Math.floor(Math.random() * 3) - 1);
+                const dy = ratio * force * y + (Math.floor(Math.random() * 3) - 1);
+
+                return [x - dx, y - dy];
+            }
+
+            // Tính toán toàn bộ điểm cho 1 frame
+            calc(generateFrame) {
+                const ratio = 10 * curve((generateFrame / 10) * Math.PI);
+
+                const haloRadius = Math.trunc(4 + 6 * (1 + curve((generateFrame / 10) * Math.PI)));
+                const haloNumber = Math.trunc(3000 + 4000 * Math.abs(Math.pow(curve((generateFrame / 10) * Math.PI), 2)));
+
+                const framePoints = [];
+                const heartHaloPoint = new Set();
+
+                // Tạo hạt hào quang (halo)
+                for (let i = 0; i < haloNumber; i++) {
+                    const t = Math.random() * 2 * Math.PI;
+                    const [hx, hy] = heartFunction(t, 11.6);
+                    const [sx, sy] = shrink(hx, hy, haloRadius);
+                    const key = `${Math.trunc(sx)},${Math.trunc(sy)}`;
+                    if (!heartHaloPoint.has(key)) {
+                        heartHaloPoint.add(key);
+                        const x = sx + (Math.floor(Math.random() * 29) - 14);
+                        const y = sy + (Math.floor(Math.random() * 29) - 14);
+                        const size = [1, 2, 2][Math.floor(Math.random() * 3)];
+                        framePoints.push([x, y, size]);
+                    }
+                }
+
+                // Điểm viền trái tim
+                for (const [px, py] of this.points) {
+                    const [x, y] = this.calcPosition(px, py, ratio);
+                    const size = Math.floor(Math.random() * 3) + 1; // 1, 2, 3
+                    framePoints.push([x, y, size]);
+                }
+
+                // Điểm khuếch tán viền
+                for (const [px, py] of this.edgeDiffusionPoints) {
+                    const [x, y] = this.calcPosition(px, py, ratio);
+                    const size = Math.floor(Math.random() * 2) + 1; // 1, 2
+                    framePoints.push([x, y, size]);
+                }
+
+                // Điểm khuếch tán tâm
+                for (const [px, py] of this.centerDiffusionPoints) {
+                    const [x, y] = this.calcPosition(px, py, ratio);
+                    const size = Math.floor(Math.random() * 2) + 1; // 1, 2
+                    framePoints.push([x, y, size]);
+                }
+
+                this.allPoints[generateFrame] = framePoints;
+            }
+
+            // Vẽ các hạt lên Canvas
+            render(ctx, renderFrame, centerX, centerY, scale) {
+                const points = this.allPoints[renderFrame % this.generateFrame];
+                if (!points) return;
+
+                ctx.fillStyle = HEART_COLOR;
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
+                    ctx.fillRect(
+                        centerX + p[0] * scale,
+                        centerY + p[1] * scale,
+                        p[2],
+                        p[2]
+                    );
+                }
+            }
+        }
+
+        // Khởi tạo Canvas và xử lý màn hình
+        const canvas = document.getElementById("heartCanvas");
+        const ctx = canvas.getContext("2d");
+        let centerX = 0;
+        let centerY = 0;
+        let scale = 1.0;
+
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+
+            ctx.resetTransform ? ctx.resetTransform() : ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(dpr, dpr);
+
+            centerX = width / 2;
+            centerY = height / 2;
+
+            // Tự động căn chỉnh kích thước phù hợp với màn hình di động nhỏ
+            const minDimension = Math.min(width, height);
+            if (minDimension < 520) {
+                scale = Math.max(0.65, minDimension / 520);
+            } else {
+                scale = 1.0;
+            }
+        }
+
+        window.addEventListener("resize", resizeCanvas);
+        resizeCanvas();
+
+        // Khởi tạo mô hình trái tim
+        const heart = new Heart();
+
+        // Vòng lặp vẽ (Animation loop) giữ đúng chu kỳ 160ms của code gốc
+        let renderFrame = 0;
+        let lastTime = 0;
+
+        function animate(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            const elapsed = timestamp - lastTime;
+
+            if (elapsed >= FRAME_DURATION) {
+                lastTime = timestamp - (elapsed % FRAME_DURATION);
+
+                // Xóa màn hình nền đen giống canvas.delete('all')
+                ctx.fillStyle = "#000000";
+                ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+                // Vẽ frame hiện tại
+                heart.render(ctx, renderFrame, centerX, centerY, scale);
+                renderFrame = (renderFrame + 1) % heart.generateFrame;
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
